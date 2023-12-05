@@ -7,4 +7,7 @@
 
 4. Open RPI-4
 5. SAve the h5 model on the same directory in codebase.
-6. Run the program 
+6. Run the program
+
+Latest Version:
+converted_keras.zip --new version
