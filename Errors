@@ -4,3 +4,100 @@ Error Logs:
 [ WARN:0@14.307] global ./modules/videoio/src/cap_gstreamer.cpp (862) isPipelinePlaying OpenCV | GStreamer warning: GStreamer: pipeline have not been created
 [ WARN:0@14.308] global ./modules/videoio/src/cap_v4l.cpp (902) open VIDEOIO(V4L2:/dev/video0): can't open camera by index
 Error OpenCV(4.6.0) ./modules/imgproc/src/resize.cpp:4052: error: (-215:Assertion failed) !ssize.empty() in function 'resize'
+
+import cv2
+import numpy as np
+import RPi.GPIO as GPIO
+from keras.models import load_model
+from tinydb import TinyDB, Query
+import time
+import subprocess
+
+# Load the models
+quality_model = load_model("/home/beancoders/Desktop/testingnovember/defense1/defense101.h5", compile=False)
+size_model = load_model("/home/beancoders/Desktop/testingnovember/size1/sizekeras_model.h5", compile=False)
+
+camera = cv2.VideoCapture(0)
+
+# Load the labels for quality model
+class_names_quality = open("/home/beancoders/Desktop/testingnovember/labels.txt", "r").readlines()
+
+# Load the labels for size model
+class_names_size = open("/home/beancoders/Desktop/testingnovember/size1/sizelabels.txt", "r").readlines()
+
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+GPIO.setup(18, GPIO.OUT)
+# Database Initialization
+db = TinyDB('tnydb.json')
+
+badConsecutive = 0
+
+try:
+    while True:
+        _, image = camera.read()
+
+        # Resize the image
+        image = cv2.resize(image, (224, 224), interpolation=cv2.INTER_AREA)
+
+        # Preprocess the image for quality model
+        image_quality = np.asarray(image, dtype=np.float32)
+        image_quality = (image_quality / 127.5) - 1
+
+        # Preprocess the image for size model
+        image_size = np.asarray(image, dtype=np.float32)
+        image_size = (image_size / 127.5) - 1
+
+        # Predict the quality model
+        prediction_quality = quality_model.predict(np.expand_dims(image_quality, axis=0))
+        index_quality = np.argmax(prediction_quality)
+        class_name_quality = class_names_quality[index_quality].strip()
+        confidence_score_quality = np.round(prediction_quality[0][index_quality] * 100)
+
+        # Predict the size model
+        prediction_size = size_model.predict(np.expand_dims(image_size, axis=0))
+        index_size = np.argmax(prediction_size)
+        class_name_size = class_names_size[index_size].strip()
+        confidence_score_size = np.round(prediction_size[0][index_size] * 100)
+
+        # Logic for GPIO control based on quality and size
+        if (
+            (class_name_quality == "1 Bad" and confidence_score_quality > 80)
+            or (class_name_quality == "0 Good" and confidence_score_quality < 40)
+        ) and (
+            (class_name_size == "0 Small" and confidence_score_size > 80)
+            or (class_name_size == "1 Large" and confidence_score_size < 40)
+        ):
+            print("Bad quality and large size detected with confidence:", confidence_score_quality * confidence_score_size)
+            GPIO.output(18, GPIO.LOW)
+            badConsecutive += 1
+
+        elif class_name_quality == "0 Good" and class_name_size == "1 Large":
+            print("Good quality and small size detected with confidence:", confidence_score_quality * confidence_score_size)
+            GPIO.output(18, GPIO.HIGH)
+            
+        elif class_name_quality == "2 Neutral":
+            print('Neutral')
+            GPIO.output(18, GPIO.HIGH)
+
+        keyboard_input = cv2.waitKey(1)
+
+        if badConsecutive >= 3:
+            existing_data = db.all()[0]['data']
+            existing_data['bad'] += 1
+            db.update({'data': existing_data}, Query().data.exists())
+            badConsecutive = 0
+
+        if keyboard_input == 27:
+            break
+
+except Exception as e:
+    print('Error', e)
+    print('Rebooting...')
+    #subprocess.run(["sudo", "reboot"])
+
+finally:
+    # Release resources
+    camera.release()
+    cv2.destroyAllWindows()
+
